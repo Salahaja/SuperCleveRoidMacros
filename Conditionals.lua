@@ -2016,72 +2016,53 @@ function CleveRoids.ValidateComboPoints(operator, amount)
     return false
 end
 
--- Returns percent of swing elapsed (0-100) from best available source, or nil
--- Priority: 1) SP_SwingTimer, 2) pfUI swing timer module
-function CleveRoids.GetSwingPercentElapsed()
-    -- Priority 1: SP_SwingTimer
-    if st_timer ~= nil then
-        local attackSpeed = st_timerMax or UnitAttackSpeed("player")
-        if attackSpeed and attackSpeed > 0 then
-            return ((attackSpeed - st_timer) / attackSpeed) * 100
-        end
-    end
+-- Player attack timers, fed by ClassicAPI's PLAYER_SWING: it fires on every reset
+-- with the seconds until that weapon's next swing. The server never rescales a
+-- running swing when haste changes, so the duration captured at reset is that
+-- swing's true length. A timer past its end is idle: auto-attack stopped, or no
+-- swing has happened yet.
+local swingTimers = {}  -- [Enum.PlayerSwingType] = { start, duration }
 
-    -- Priority 2: pfUI swing timer
-    if pfUI and pfUI.swingtimer and pfUI.swingtimer.mainhand
-       and pfUI.swingtimer.mainhand:IsShown() then
-        return pfUI.swingtimer.mainhand:GetValue() * 100
+local swingFrame = CreateFrame("Frame", "CleveRoidsSwingFrame")
+swingFrame:RegisterEvent("PLAYER_SWING")
+swingFrame:SetScript("OnEvent", function()
+    local timer = swingTimers[arg2]
+    if not timer then
+        timer = {}
+        swingTimers[arg2] = timer
     end
+    timer.start = GetTime()
+    timer.duration = arg1
+end)
 
-    return nil
+-- Returns timeRemaining, swingDuration for an Enum.PlayerSwingType, or nil when idle
+function CleveRoids.GetSwingTimer(swingType)
+    local timer = swingTimers[swingType]
+    if not timer then return nil end
+    local remaining = timer.start + timer.duration - GetTime()
+    if remaining <= 0 then return nil end
+    return remaining, timer.duration
 end
 
--- Returns timeRemaining, swingSpeed from best available source, or nil, nil
--- Priority: 1) SP_SwingTimer, 2) pfUI swing timer + GetUnitField
-function CleveRoids.GetSwingTimerRaw()
-    -- Priority 1: SP_SwingTimer
-    if st_timer ~= nil and st_timerMax ~= nil then
-        return st_timer, st_timerMax
-    end
-
-    -- Priority 2: pfUI swing timer + GetUnitField
-    if pfUI and pfUI.swingtimer and pfUI.swingtimer.mainhand
-       and pfUI.swingtimer.mainhand:IsShown() and GetUnitField then
-        local mhSpeed = GetUnitField("player", "baseAttackTime")
-        if mhSpeed and mhSpeed > 0 then
-            local swingSpeed = mhSpeed / 1000
-            local progress = pfUI.swingtimer.mainhand:GetValue()
-            local timeRemaining = (1 - progress) * swingSpeed
-            return timeRemaining, swingSpeed
-        end
-    end
-
-    return nil, nil
+-- Returns percent (0-100) of the current swing elapsed, or nil when idle
+function CleveRoids.GetSwingPercentElapsed(swingType)
+    local remaining, duration = CleveRoids.GetSwingTimer(swingType)
+    if not remaining then return nil end
+    return (duration - remaining) / duration * 100
 end
 
--- Validates swing timer percentage for SP_SwingTimer / pfUI integration
--- operator: Comparison operator (>, <, =, >=, <=, ~=)
--- amount: Percentage of swing time elapsed (e.g., 20 means 20% of swing has elapsed)
--- returns: True if percentElapsed [operator] amount
-function CleveRoids.ValidateSwingTimer(operator, amount)
-    if not operator or not amount then return false end
-
-    local percentElapsed = CleveRoids.GetSwingPercentElapsed()
-    if percentElapsed == nil then
-        -- Only show error once per session
-        if not CleveRoids._swingTimerErrorShown then
-            DEFAULT_CHAT_FRAME:AddMessage("|cffff0000[SuperCleveRoidMacros]|r The [swingtimer] conditional requires SP_SwingTimer or pfUI (swing timer module). Get SP_SwingTimer at: https://github.com/jrc13245/SP_SwingTimer", 1, 0.5, 0.5)
-            CleveRoids._swingTimerErrorShown = true
+-- True if the swing's elapsed percent passes every comparison in args (a single
+-- operator/amount, or a multi-comparison list such as >50&<80). Idle is false.
+function CleveRoids.ValidateSwingPercent(swingType, args)
+    local percentElapsed = CleveRoids.GetSwingPercentElapsed(swingType)
+    if not percentElapsed then return false end
+    for _, comp in ipairs(args.comparisons or { args }) do
+        local compare = CleveRoids.comparators[comp.operator]
+        if not compare or not compare(percentElapsed, comp.amount) then
+            return false
         end
-        return false
     end
-
-    -- Compare percent elapsed against threshold
-    if CleveRoids.operators[operator] then
-        return CleveRoids.comparators[operator](percentElapsed, amount)
-    end
-
-    return false
+    return true
 end
 
 -- Constants for Slam window calculations
@@ -2194,96 +2175,12 @@ function CleveRoids.RefreshSlamCastTime()
     slamCastTimeLastUpdate = 0
 end
 
--- Calculate maximum elapsed swing timer % to cast Slam without clipping auto-attack
--- Formula: MaxSlamPercent = (SwingTimer - SlamCastTime) / SwingTimer * 100
--- IMPORTANT: Uses st_timerMax (SP_SwingTimer's adjusted swing timer) not UnitAttackSpeed
--- because Flurry and other buffs modify st_timerMax but not UnitAttackSpeed
-function CleveRoids.GetSlamWindowPercent()
-    -- Use swing speed from best available source (SP_SwingTimer or pfUI)
-    -- Fall back to UnitAttackSpeed if neither available
-    local _, swingSpeed = CleveRoids.GetSwingTimerRaw()
-    local attackSpeed = swingSpeed or UnitAttackSpeed("player")
-    if not attackSpeed or attackSpeed <= 0 then return 0 end
-
-    local slamCastTime = CleveRoids.GetSlamCastTime()
-    local maxSlamStart = attackSpeed - slamCastTime
-
-    if maxSlamStart <= 0 then return 0 end  -- Slam cast time exceeds swing timer
-
-    return (maxSlamStart / attackSpeed) * 100
-end
-
--- Calculate maximum elapsed swing timer % to cast instant without clipping NEXT Slam
--- Scenario: No Slam this swing, cast instant, then Slam next swing without clipping
--- Formula: MaxInstantPercent = (2 * SwingTimer - SlamCastTime - GCD) / SwingTimer * 100
-function CleveRoids.GetInstantWindowPercent()
-    -- Use swing speed from best available source (SP_SwingTimer or pfUI)
-    local _, swingSpeed = CleveRoids.GetSwingTimerRaw()
-    local attackSpeed = swingSpeed or UnitAttackSpeed("player")
-    if not attackSpeed or attackSpeed <= 0 then return 0 end
-
-    local slamCastTime = CleveRoids.GetSlamCastTime()
-    local maxInstantStart = (2 * attackSpeed) - slamCastTime - GCD_DURATION
-
-    if maxInstantStart <= 0 then return 0 end  -- Window is impossible with current timings
-
-    return (maxInstantStart / attackSpeed) * 100
-end
-
--- Returns timeRemaining, rangedSpeed from SP_SwingTimer, or nil, nil
-function CleveRoids.GetRangedTimerRaw()
-    if st_timerRange ~= nil and st_timerRangeMax ~= nil and st_timerRangeMax > 0 then
-        return st_timerRange, st_timerRangeMax
-    end
-    return nil, nil
-end
-
--- Returns percent of ranged swing elapsed (0-100) from SP_SwingTimer, or nil
-function CleveRoids.GetRangedPercentElapsed()
-    if st_timerRange ~= nil and st_timerRangeMax ~= nil and st_timerRangeMax > 0 then
-        return ((st_timerRangeMax - st_timerRange) / st_timerRangeMax) * 100
-    end
-    return nil
-end
-
--- Validates ranged swing timer percentage for SP_SwingTimer integration
--- operator: Comparison operator (>, <, =, >=, <=, ~=)
--- amount: Percentage of ranged swing time elapsed (e.g., 80 means 80% has elapsed)
--- returns: True if percentElapsed [operator] amount
-function CleveRoids.ValidateRangedTimer(operator, amount)
-    if not operator or not amount then return false end
-
-    local percentElapsed = CleveRoids.GetRangedPercentElapsed()
-    if percentElapsed == nil then
-        if not CleveRoids._rangedTimerErrorShown then
-            DEFAULT_CHAT_FRAME:AddMessage("|cffff0000[SuperCleveRoidMacros]|r The [rangedtimer] conditional requires SP_SwingTimer. Get it at: https://github.com/jrc13245/SP_SwingTimer", 1, 0.5, 0.5)
-            CleveRoids._rangedTimerErrorShown = true
-        end
-        return false
-    end
-
-    if CleveRoids.operators[operator] then
-        return CleveRoids.comparators[operator](percentElapsed, amount)
-    end
-
-    return false
-end
-
--- Validate if casting the action's spell NOW will NOT clip the ranged auto-shot
--- Returns true if rangedTimeRemaining >= spellCastTime (enough time to finish cast before next auto)
--- If ranged timer is not active, returns true (nothing to clip)
+-- True if casting the action's spell NOW will not clip the ranged auto-shot: the
+-- cast finishes before the next shot. No auto-shot running means nothing to clip.
 function CleveRoids.ValidateNoRangedClip(conditionals)
-    local remaining, rangedSpeed = CleveRoids.GetRangedTimerRaw()
-    if remaining == nil then
-        -- No ranged timer available — either no addon or timer not active (nothing to clip)
-        if st_timerRangeMax == nil and not CleveRoids._rangedClipErrorShown then
-            DEFAULT_CHAT_FRAME:AddMessage("|cffff0000[SuperCleveRoidMacros]|r The [norangedclip] conditional requires SP_SwingTimer. Get it at: https://github.com/jrc13245/SP_SwingTimer", 1, 0.5, 0.5)
-            CleveRoids._rangedClipErrorShown = true
-        end
-        return true
-    end
+    local remaining = CleveRoids.GetSwingTimer(Enum.PlayerSwingType.Ranged)
+    if not remaining then return true end
 
-    -- Get the cast time of the action spell
     local actionName = conditionals and conditionals.action
     if not actionName then return true end
 
@@ -2295,36 +2192,20 @@ function CleveRoids.ValidateNoRangedClip(conditionals)
     return remaining >= castTime
 end
 
--- Validate if current swing timer is within the Slam window (no clip)
--- Returns true if casting Slam NOW will NOT clip the auto-attack
+-- True if casting Slam NOW will not clip the main-hand swing: the cast finishes
+-- before the swing lands. Idle (no swing running) is false.
 function CleveRoids.ValidateNoSlamClip()
-    local percentElapsed = CleveRoids.GetSwingPercentElapsed()
-    if percentElapsed == nil then
-        if not CleveRoids._slamClipErrorShown then
-            DEFAULT_CHAT_FRAME:AddMessage("|cffff0000[SuperCleveRoidMacros]|r The [noslamclip] conditional requires SP_SwingTimer or pfUI (swing timer module). Get SP_SwingTimer at: https://github.com/jrc13245/SP_SwingTimer", 1, 0.5, 0.5)
-            CleveRoids._slamClipErrorShown = true
-        end
-        return false
-    end
-
-    local maxPercent = CleveRoids.GetSlamWindowPercent()
-    return percentElapsed <= maxPercent
+    local remaining = CleveRoids.GetSwingTimer(Enum.PlayerSwingType.MainHand)
+    return remaining ~= nil and remaining >= CleveRoids.GetSlamCastTime()
 end
 
--- Validate if current swing timer is within the instant window for next Slam
--- Returns true if casting an instant NOW will NOT cause the NEXT Slam to clip
+-- True if casting an instant NOW will not cause the NEXT Slam to clip.
+-- Scenario: skip Slam this swing, cast an instant, then Slam next swing. The GCD
+-- plus Slam's cast must fit before the swing after this one lands. Idle is false.
 function CleveRoids.ValidateNoNextSlamClip()
-    local percentElapsed = CleveRoids.GetSwingPercentElapsed()
-    if percentElapsed == nil then
-        if not CleveRoids._slamClipErrorShown then
-            DEFAULT_CHAT_FRAME:AddMessage("|cffff0000[SuperCleveRoidMacros]|r The [nonextslamclip] conditional requires SP_SwingTimer or pfUI (swing timer module). Get SP_SwingTimer at: https://github.com/jrc13245/SP_SwingTimer", 1, 0.5, 0.5)
-            CleveRoids._slamClipErrorShown = true
-        end
-        return false
-    end
-
-    local maxPercent = CleveRoids.GetInstantWindowPercent()
-    return percentElapsed <= maxPercent
+    local remaining, duration = CleveRoids.GetSwingTimer(Enum.PlayerSwingType.MainHand)
+    return remaining ~= nil
+        and remaining + duration >= GCD_DURATION + CleveRoids.GetSlamCastTime()
 end
 
 -- ============================================================================
@@ -7725,257 +7606,73 @@ CleveRoids.Keywords = {
         return not isImmune
     end,
 
-    -- SP_SwingTimer integration conditionals
-    -- Checks percentage of swing time that has elapsed
+    -- Swing timer conditionals (ClassicAPI PLAYER_SWING)
+    -- Checks percentage of the current swing that has elapsed; false while idle
     -- Usage: [swingtimer:<15] = less than 15% of swing has elapsed (early in swing)
     --        [swingtimer:>80] = more than 80% of swing has elapsed (late in swing)
     swingtimer = function(conditionals)
         return Multi(conditionals.swingtimer, function(args)
-            if type(args) ~= "table" then return false end
-
-            -- Handle multi-comparison (e.g., >50&<80)
-            if args.comparisons and type(args.comparisons) == "table" then
-                local percentElapsed = CleveRoids.GetSwingPercentElapsed()
-                if percentElapsed == nil then
-                    if not CleveRoids._swingTimerErrorShown then
-                        DEFAULT_CHAT_FRAME:AddMessage("|cffff0000[SuperCleveRoidMacros]|r The [swingtimer] conditional requires SP_SwingTimer or pfUI (swing timer module). Get SP_SwingTimer at: https://github.com/jrc13245/SP_SwingTimer", 1, 0.5, 0.5)
-                        CleveRoids._swingTimerErrorShown = true
-                    end
-                    return false
-                end
-
-                -- ALL comparisons must pass (AND logic)
-                for _, comp in ipairs(args.comparisons) do
-                    if not CleveRoids.operators[comp.operator] then
-                        return false
-                    end
-                    if not CleveRoids.comparators[comp.operator](percentElapsed, comp.amount) then
-                        return false
-                    end
-                end
-                return true
-            end
-
-            return CleveRoids.ValidateSwingTimer(args.operator, args.amount)
+            return type(args) == "table"
+                and CleveRoids.ValidateSwingPercent(Enum.PlayerSwingType.MainHand, args)
         end, conditionals, "swingtimer")
     end,
 
     -- Alias for swingtimer
     stimer = function(conditionals)
         return Multi(conditionals.stimer, function(args)
-            if type(args) ~= "table" then return false end
-
-            -- Handle multi-comparison (e.g., >50&<80)
-            if args.comparisons and type(args.comparisons) == "table" then
-                local percentElapsed = CleveRoids.GetSwingPercentElapsed()
-                if percentElapsed == nil then
-                    if not CleveRoids._swingTimerErrorShown then
-                        DEFAULT_CHAT_FRAME:AddMessage("|cffff0000[SuperCleveRoidMacros]|r The [swingtimer] conditional requires SP_SwingTimer or pfUI (swing timer module). Get SP_SwingTimer at: https://github.com/jrc13245/SP_SwingTimer", 1, 0.5, 0.5)
-                        CleveRoids._swingTimerErrorShown = true
-                    end
-                    return false
-                end
-
-                -- ALL comparisons must pass (AND logic)
-                for _, comp in ipairs(args.comparisons) do
-                    if not CleveRoids.operators[comp.operator] then
-                        return false
-                    end
-                    if not CleveRoids.comparators[comp.operator](percentElapsed, comp.amount) then
-                        return false
-                    end
-                end
-                return true
-            end
-
-            return CleveRoids.ValidateSwingTimer(args.operator, args.amount)
+            return type(args) == "table"
+                and CleveRoids.ValidateSwingPercent(Enum.PlayerSwingType.MainHand, args)
         end, conditionals, "stimer")
     end,
 
     -- Negated swingtimer
     noswingtimer = function(conditionals)
         return NegatedMulti(conditionals.noswingtimer, function(args)
-            if type(args) ~= "table" then return false end
-
-            -- Handle multi-comparison by checking positive and negating
-            if args.comparisons and type(args.comparisons) == "table" then
-                local percentElapsed = CleveRoids.GetSwingPercentElapsed()
-                if percentElapsed == nil then
-                    if not CleveRoids._swingTimerErrorShown then
-                        DEFAULT_CHAT_FRAME:AddMessage("|cffff0000[SuperCleveRoidMacros]|r The [swingtimer] conditional requires SP_SwingTimer or pfUI (swing timer module). Get SP_SwingTimer at: https://github.com/jrc13245/SP_SwingTimer", 1, 0.5, 0.5)
-                        CleveRoids._swingTimerErrorShown = true
-                    end
-                    return true
-                end
-
-                -- Check if ALL comparisons pass
-                for _, comp in ipairs(args.comparisons) do
-                    if not CleveRoids.operators[comp.operator] then
-                        return true
-                    end
-                    if not CleveRoids.comparators[comp.operator](percentElapsed, comp.amount) then
-                        return true  -- One failed, so positive=false, negated=true
-                    end
-                end
-                return false  -- All passed, so positive=true, negated=false
-            end
-
-            return not CleveRoids.ValidateSwingTimer(args.operator, args.amount)
+            return type(args) == "table"
+                and not CleveRoids.ValidateSwingPercent(Enum.PlayerSwingType.MainHand, args)
         end, conditionals, "noswingtimer")
     end,
 
     -- Alias for noswingtimer
     nostimer = function(conditionals)
         return NegatedMulti(conditionals.nostimer, function(args)
-            if type(args) ~= "table" then return false end
-
-            -- Handle multi-comparison by checking positive and negating
-            if args.comparisons and type(args.comparisons) == "table" then
-                local percentElapsed = CleveRoids.GetSwingPercentElapsed()
-                if percentElapsed == nil then
-                    if not CleveRoids._swingTimerErrorShown then
-                        DEFAULT_CHAT_FRAME:AddMessage("|cffff0000[SuperCleveRoidMacros]|r The [swingtimer] conditional requires SP_SwingTimer or pfUI (swing timer module). Get SP_SwingTimer at: https://github.com/jrc13245/SP_SwingTimer", 1, 0.5, 0.5)
-                        CleveRoids._swingTimerErrorShown = true
-                    end
-                    return true
-                end
-
-                -- Check if ALL comparisons pass
-                for _, comp in ipairs(args.comparisons) do
-                    if not CleveRoids.operators[comp.operator] then
-                        return true
-                    end
-                    if not CleveRoids.comparators[comp.operator](percentElapsed, comp.amount) then
-                        return true  -- One failed, so positive=false, negated=true
-                    end
-                end
-                return false  -- All passed, so positive=true, negated=false
-            end
-
-            return not CleveRoids.ValidateSwingTimer(args.operator, args.amount)
+            return type(args) == "table"
+                and not CleveRoids.ValidateSwingPercent(Enum.PlayerSwingType.MainHand, args)
         end, conditionals, "nostimer")
     end,
 
-    -- SP_SwingTimer ranged swing timer conditional
-    -- Checks percentage of ranged swing time that has elapsed
+    -- Ranged swing timer conditional
+    -- Checks percentage of the current ranged swing that has elapsed; false while idle
     -- Usage: [rangedtimer:>80] = more than 80% of ranged swing has elapsed
     --        [rangedtimer:<20] = less than 20% of ranged swing has elapsed
     rangedtimer = function(conditionals)
         return Multi(conditionals.rangedtimer, function(args)
-            if type(args) ~= "table" then return false end
-
-            if args.comparisons and type(args.comparisons) == "table" then
-                local percentElapsed = CleveRoids.GetRangedPercentElapsed()
-                if percentElapsed == nil then
-                    if not CleveRoids._rangedTimerErrorShown then
-                        DEFAULT_CHAT_FRAME:AddMessage("|cffff0000[SuperCleveRoidMacros]|r The [rangedtimer] conditional requires SP_SwingTimer. Get it at: https://github.com/jrc13245/SP_SwingTimer", 1, 0.5, 0.5)
-                        CleveRoids._rangedTimerErrorShown = true
-                    end
-                    return false
-                end
-
-                for _, comp in ipairs(args.comparisons) do
-                    if not CleveRoids.operators[comp.operator] then
-                        return false
-                    end
-                    if not CleveRoids.comparators[comp.operator](percentElapsed, comp.amount) then
-                        return false
-                    end
-                end
-                return true
-            end
-
-            return CleveRoids.ValidateRangedTimer(args.operator, args.amount)
+            return type(args) == "table"
+                and CleveRoids.ValidateSwingPercent(Enum.PlayerSwingType.Ranged, args)
         end, conditionals, "rangedtimer")
     end,
 
     -- Alias for rangedtimer
     rtimer = function(conditionals)
         return Multi(conditionals.rtimer, function(args)
-            if type(args) ~= "table" then return false end
-
-            if args.comparisons and type(args.comparisons) == "table" then
-                local percentElapsed = CleveRoids.GetRangedPercentElapsed()
-                if percentElapsed == nil then
-                    if not CleveRoids._rangedTimerErrorShown then
-                        DEFAULT_CHAT_FRAME:AddMessage("|cffff0000[SuperCleveRoidMacros]|r The [rangedtimer] conditional requires SP_SwingTimer. Get it at: https://github.com/jrc13245/SP_SwingTimer", 1, 0.5, 0.5)
-                        CleveRoids._rangedTimerErrorShown = true
-                    end
-                    return false
-                end
-
-                for _, comp in ipairs(args.comparisons) do
-                    if not CleveRoids.operators[comp.operator] then
-                        return false
-                    end
-                    if not CleveRoids.comparators[comp.operator](percentElapsed, comp.amount) then
-                        return false
-                    end
-                end
-                return true
-            end
-
-            return CleveRoids.ValidateRangedTimer(args.operator, args.amount)
+            return type(args) == "table"
+                and CleveRoids.ValidateSwingPercent(Enum.PlayerSwingType.Ranged, args)
         end, conditionals, "rtimer")
     end,
 
     -- Negated rangedtimer
     norangedtimer = function(conditionals)
         return NegatedMulti(conditionals.norangedtimer, function(args)
-            if type(args) ~= "table" then return false end
-
-            if args.comparisons and type(args.comparisons) == "table" then
-                local percentElapsed = CleveRoids.GetRangedPercentElapsed()
-                if percentElapsed == nil then
-                    if not CleveRoids._rangedTimerErrorShown then
-                        DEFAULT_CHAT_FRAME:AddMessage("|cffff0000[SuperCleveRoidMacros]|r The [rangedtimer] conditional requires SP_SwingTimer. Get it at: https://github.com/jrc13245/SP_SwingTimer", 1, 0.5, 0.5)
-                        CleveRoids._rangedTimerErrorShown = true
-                    end
-                    return true
-                end
-
-                for _, comp in ipairs(args.comparisons) do
-                    if not CleveRoids.operators[comp.operator] then
-                        return true
-                    end
-                    if not CleveRoids.comparators[comp.operator](percentElapsed, comp.amount) then
-                        return true
-                    end
-                end
-                return false
-            end
-
-            return not CleveRoids.ValidateRangedTimer(args.operator, args.amount)
+            return type(args) == "table"
+                and not CleveRoids.ValidateSwingPercent(Enum.PlayerSwingType.Ranged, args)
         end, conditionals, "norangedtimer")
     end,
 
     -- Alias for norangedtimer
     nortimer = function(conditionals)
         return NegatedMulti(conditionals.nortimer, function(args)
-            if type(args) ~= "table" then return false end
-
-            if args.comparisons and type(args.comparisons) == "table" then
-                local percentElapsed = CleveRoids.GetRangedPercentElapsed()
-                if percentElapsed == nil then
-                    if not CleveRoids._rangedTimerErrorShown then
-                        DEFAULT_CHAT_FRAME:AddMessage("|cffff0000[SuperCleveRoidMacros]|r The [rangedtimer] conditional requires SP_SwingTimer. Get it at: https://github.com/jrc13245/SP_SwingTimer", 1, 0.5, 0.5)
-                        CleveRoids._rangedTimerErrorShown = true
-                    end
-                    return true
-                end
-
-                for _, comp in ipairs(args.comparisons) do
-                    if not CleveRoids.operators[comp.operator] then
-                        return true
-                    end
-                    if not CleveRoids.comparators[comp.operator](percentElapsed, comp.amount) then
-                        return true
-                    end
-                end
-                return false
-            end
-
-            return not CleveRoids.ValidateRangedTimer(args.operator, args.amount)
+            return type(args) == "table"
+                and not CleveRoids.ValidateSwingPercent(Enum.PlayerSwingType.Ranged, args)
         end, conditionals, "nortimer")
     end,
 
@@ -8286,8 +7983,7 @@ CleveRoids.Keywords = {
     end,
 
     -- Slam clip window conditionals for Warrior Slam rotation optimization
-    -- Based on math: MaxSlamPercent = (SwingTimer - SlamCastTime) / SwingTimer * 100
-    -- Requires SP_SwingTimer addon and Nampower for cast time lookup
+    -- Compares the main-hand swing time remaining against Slam's cast time
 
     -- [noslamclip] - True if casting Slam NOW will NOT clip the auto-attack
     -- Usage: /cast [noslamclip] Slam
@@ -8318,7 +8014,6 @@ CleveRoids.Keywords = {
     -- Ranged clip window conditionals
     -- Checks if there is enough time remaining on the ranged auto-shot timer
     -- for the action's cast time to complete without delaying the next auto-shot.
-    -- Requires SP_SwingTimer addon for ranged timer data.
 
     -- [norangedclip] - True if casting the action spell NOW will NOT clip ranged auto-shot
     -- Usage: /cast [norangedclip] Aimed Shot

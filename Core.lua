@@ -205,9 +205,10 @@ requirementCheckFrame:SetScript("OnEvent", function()
     -- function exists but a held button keeps its value, so [button:N] reads the
     -- button you are turning the camera with -- wrong quietly, which is the worse
     -- failure and why the floor moved rather than the conditional being gated.
-    local hasClassicAPI1158 = hasClassicAPI and CleveRoids.ClassicAPI.HasMinimumVersion(1, 15, 8)
+    -- v1.15.10 added PLAYER_SWING, the only source for the swing-timer conditionals.
+    local hasClassicAPIMin = hasClassicAPI and CleveRoids.ClassicAPI.HasMinimumVersion(1, 15, 10)
 
-    if not hasNampower30 or not hasUnitXP or not hasClassicAPI or not hasClassicAPI1158 then
+    if not hasNampower30 or not hasUnitXP or not hasClassicAPI or not hasClassicAPIMin then
         -- Show warnings (don't disable — tearing down a partially-initialized addon causes hangs)
         if not hasNampower then
             CleveRoids.Print("|cFFFF9900WARNING:|r |cFF00FFFFAvitasia's Nampower v3.0.0+|r is required:")
@@ -227,9 +228,9 @@ requirementCheckFrame:SetScript("OnEvent", function()
             CleveRoids.Print("|cFFFF9900WARNING:|r |cFF00FFFFClassicAPI|r is required:")
             CleveRoids.Print("https://github.com/brues-code/ClassicAPI")
             CleveRoids.Print("Dispel-type and movement conditionals will be unavailable without it.")
-        elseif not hasClassicAPI1158 then
+        elseif not hasClassicAPIMin then
             local major, minor, patch = CleveRoids.ClassicAPI.GetVersion()
-            CleveRoids.Print(format("|cFFFF9900WARNING:|r |cFF00FFFFClassicAPI v1.15.8+|r is required (you have v%d.%d.%d):", major, minor, patch))
+            CleveRoids.Print(format("|cFFFF9900WARNING:|r |cFF00FFFFClassicAPI v1.15.10+|r is required (you have v%d.%d.%d):", major, minor, patch))
             CleveRoids.Print("https://github.com/brues-code/ClassicAPI")
             CleveRoids.Print("The addon cannot finish loading on this version -- update ClassicAPI.")
         end

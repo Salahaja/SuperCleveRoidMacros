@@ -3,8 +3,9 @@
 
     ClassicAPI is a client mod (sibling to Nampower/SuperWoW) that backports the
     modern C_* API into the 1.12.1 Lua environment. It is a HARD REQUIREMENT of
-    this addon (ClassicAPI v1.15.8+, which scoped GetMouseButtonClicked to the
-    click dispatch; v1.15.0 added frame:RegisterUnitEvent), so the
+    this addon (ClassicAPI v1.15.10+, which added PLAYER_SWING; v1.15.8 scoped
+    GetMouseButtonClicked to the click dispatch; v1.15.0 added
+    frame:RegisterUnitEvent), so the
     wrappers below call the API directly — no fallbacks. The load-time requirement
     check (Core.lua) uses IsAvailable() to warn when the DLL is missing and
     HasMinimumVersion() when it's too old; users who don't want ClassicAPI should
@@ -23,6 +24,8 @@
     - C_UnitAuras: dispel-type detection (Magic/Curse/Disease/Poison) on any unit,
       powering the [magic]/[curse]/[disease]/[poison]/[dispellable] conditionals.
     - GetUnitSpeed / IsFalling: the [moving] conditional.
+    - PLAYER_SWING: the attack timers (Conditionals.lua) behind [swingtimer],
+      [rangedtimer], [noslamclip], [nonextslamclip] and [norangedclip].
 ]]
 
 local _G = _G or getfenv(0)

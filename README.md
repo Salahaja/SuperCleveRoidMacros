@@ -10,7 +10,7 @@ Enhanced macro addon for World of Warcraft 1.12.1 (Vanilla/Turtle WoW) with dyna
 |-----|:--------:|---------|
 | [Nampower](https://github.com/brues-code/nampower/releases) (v3.0.0+) | ✅ | Spell queueing, DBC data, auto-attack events |
 | [UnitXP_SP3](https://codeberg.org/konaka/UnitXP_SP3/releases) | ✅ | Distance checks, `[multiscan]` enemy scanning |
-| [ClassicAPI](https://github.com/brues-code/ClassicAPI/releases) (v1.15.8+) | ✅ | Modern `C_*` API: dispel-type conditionals (`[magic]`, `[curse]`, …), `[moving]` speed, unit-filtered events |
+| [ClassicAPI](https://github.com/brues-code/ClassicAPI/releases) (v1.15.10+) | ✅ | Modern `C_*` API: dispel-type conditionals (`[magic]`, `[curse]`, …), `[moving]` speed, swing timers, unit-filtered events |
 
 ## Installation
 
@@ -68,7 +68,7 @@ See the **[Wiki](https://github.com/brues-code/SuperCleveRoidMacros/wiki)** for 
 
 **Action Bars:** Blizzard, [pfUI](https://github.com/brues-code/pfUI), Bongos, Discord Action Bars
 
-**Integrations:** [SP_SwingTimer](https://github.com/jrc13245/SP_SwingTimer), [TWThreat](https://github.com/MarcelineVQ/TWThreat), [TimeToKill](https://github.com/jrc13245/TimeToKill), [QuickHeal](https://github.com/jrc13245/QuickHeal), [Cursive](https://github.com/pepopo978/Cursive), [ClassicFocus](https://github.com/wtfcolt/Addons-for-Vanilla-1.12.1-CFM/tree/master/ClassicFocus), [SuperMacro](https://github.com/jrc13245/SuperMacro-turtle-SuperWoW)
+**Integrations:** [TWThreat](https://github.com/MarcelineVQ/TWThreat), [TimeToKill](https://github.com/jrc13245/TimeToKill), [QuickHeal](https://github.com/jrc13245/QuickHeal), [Cursive](https://github.com/pepopo978/Cursive), [ClassicFocus](https://github.com/wtfcolt/Addons-for-Vanilla-1.12.1-CFM/tree/master/ClassicFocus), [SuperMacro](https://github.com/jrc13245/SuperMacro-turtle-SuperWoW)
 
 > **Note:** For pfUI users, the [brues-code/pfUI fork](https://github.com/brues-code/pfUI) includes native SuperCleveRoidMacros integration for proper cooldown, icon, and tooltip display on conditional macros.
 
